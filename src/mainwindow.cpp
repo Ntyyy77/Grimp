@@ -782,40 +782,105 @@ void MainWindow::flipVertical()
 void MainWindow::grayscale()
 {
     if (activeLayerIndex < 0 || activeLayerIndex >= layers.size()) return;
-    QImage &img = layers[activeLayerIndex].image;
-    // convert to ARGB if necessary
-    if (img.format() != QImage::Format_ARGB32 && img.format() != QImage::Format_ARGB32_Premultiplied)
-        img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
-    for (int y = 0; y < img.height(); ++y) {
-        QRgb *scan = reinterpret_cast<QRgb*>(img.scanLine(y));
-        for (int x = 0; x < img.width(); ++x) {
+    QImage &img = layers[activeLayerIndex].image;
+    QImage preview = img.copy(); // copie pour prévisualisation
+
+    // appliquer filtre à la copie
+    for (int y = 0; y < preview.height(); ++y) {
+        QRgb *scan = reinterpret_cast<QRgb*>(preview.scanLine(y));
+        for (int x = 0; x < preview.width(); ++x) {
             QColor c(scan[x]);
             int g = qGray(c.rgb());
             scan[x] = QColor(g, g, g, c.alpha()).rgba();
         }
     }
-    compositeLayers();
-    statusLabel->setText("Grayscale applied to " + layers[activeLayerIndex].name);
+
+    // créer un dialog avec prévisualisation
+    QDialog dlg(this);
+    dlg.setWindowTitle("Apply Grayscale?");
+    dlg.resize(400, 300);
+
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QLabel *imgLabel = new QLabel(&dlg);
+    imgLabel->setPixmap(QPixmap::fromImage(preview).scaled(380, 250, Qt::KeepAspectRatio));
+    lay->addWidget(imgLabel);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *okBtn = new QPushButton("OK", &dlg);
+    QPushButton *cancelBtn = new QPushButton("Cancel", &dlg);
+    btnLayout->addWidget(okBtn);
+    btnLayout->addWidget(cancelBtn);
+    lay->addLayout(btnLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    // Enter = OK, Esc = Cancel
+    dlg.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+    dlg.setModal(true);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        pushUndoForActiveLayer();
+        clearRedoForActiveLayer();
+        img = preview; // appliquer la modification
+        compositeLayers();
+        statusLabel->setText("Grayscale applied to " + layers[activeLayerIndex].name);
+    } else {
+        statusLabel->setText("Grayscale canceled");
+    }
 }
 
 void MainWindow::invertColors()
 {
     if (activeLayerIndex < 0 || activeLayerIndex >= layers.size()) return;
-    QImage &img = layers[activeLayerIndex].image;
-    if (img.format() != QImage::Format_ARGB32 && img.format() != QImage::Format_ARGB32_Premultiplied)
-        img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
-    for (int y = 0; y < img.height(); ++y) {
-        QRgb *scan = reinterpret_cast<QRgb*>(img.scanLine(y));
-        for (int x = 0; x < img.width(); ++x) {
+    QImage &img = layers[activeLayerIndex].image;
+    QImage preview = img.copy(); // copie pour prévisualisation
+
+    // appliquer le filtre inversé sur la copie
+    for (int y = 0; y < preview.height(); ++y) {
+        QRgb *scan = reinterpret_cast<QRgb*>(preview.scanLine(y));
+        for (int x = 0; x < preview.width(); ++x) {
             QColor c(scan[x]);
             QColor n(255 - c.red(), 255 - c.green(), 255 - c.blue(), c.alpha());
             scan[x] = n.rgba();
         }
     }
-    compositeLayers();
-    statusLabel->setText("Inverted colors on " + layers[activeLayerIndex].name);
+
+    // créer un dialog pour prévisualisation
+    QDialog dlg(this);
+    dlg.setWindowTitle("Apply Invert Colors?");
+    dlg.resize(400, 300);
+
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QLabel *imgLabel = new QLabel(&dlg);
+    imgLabel->setPixmap(QPixmap::fromImage(preview).scaled(380, 250, Qt::KeepAspectRatio));
+    lay->addWidget(imgLabel);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *okBtn = new QPushButton("OK", &dlg);
+    QPushButton *cancelBtn = new QPushButton("Cancel", &dlg);
+    btnLayout->addWidget(okBtn);
+    btnLayout->addWidget(cancelBtn);
+    lay->addLayout(btnLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    dlg.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+    dlg.setModal(true);
+
+    // si OK ou Entrée -> appliquer, sinon Échap -> annuler
+    if (dlg.exec() == QDialog::Accepted) {
+        pushUndoForActiveLayer();
+        clearRedoForActiveLayer();
+        img = preview; // appliquer la modification
+        compositeLayers();
+        statusLabel->setText("Inverted colors applied to " + layers[activeLayerIndex].name);
+    } else {
+        statusLabel->setText("Invert canceled");
+    }
 }
 
 // end of file
