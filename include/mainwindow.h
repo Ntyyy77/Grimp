@@ -52,6 +52,12 @@ public:
     void setPenWidth(int w);
     void setEraserMode(bool on);
 
+    // mainwindow.h, dans Canvas
+    bool isRectSelection() const { return currentTool == RECT_SELECT && _hasSelection; }
+    bool isLassoSelection() const { return currentTool == LASSO_SELECT && _hasSelection; }
+    QPolygon getLassoPolygon() const { return lassoPolygon; }
+
+
     // zoom
     void setZoom(double z);
 
@@ -62,23 +68,29 @@ public:
     QRect getSelectionRect() const { return selectionRect; }
     QImage getSelectionImage() const
     {
-        if (!hasSelection()) return QImage();  // <-- appeler la fonction
+        if (!hasSelection() || !targetImg) return QImage();
 
-        if (currentTool == RECT_SELECT)
+        if (currentTool == RECT_SELECT) {
             return targetImg->copy(selectionRect);
+        } 
         else if (currentTool == LASSO_SELECT) {
+            if (lassoPolygon.isEmpty()) return QImage();
             QImage img(selectionRect.size(), QImage::Format_ARGB32_Premultiplied);
             img.fill(Qt::transparent);
-            QPainter painter(&img);  // QPainter connu grâce à l'include
+
+            QPainter painter(&img);
             QPolygon poly;
             for (const QPoint &p : lassoPolygon)
-                poly << (p - selectionRect.topLeft());
+                poly << (p - selectionRect.topLeft());  // position relative à selectionRect
             painter.setClipRegion(QRegion(poly));
             painter.drawImage(-selectionRect.topLeft(), *targetImg);
+
             return img;
         }
+
         return QImage();
     }
+
     void commitTextItems();
 
 signals:

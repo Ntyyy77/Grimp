@@ -6,6 +6,7 @@
 #include <QFontComboBox>
 #include <QSpinBox>
 #include <QFileDialog>
+#include <QPainterPath>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QHBoxLayout>
@@ -290,14 +291,28 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         }
         selecting = false;
 
-        // **Met à jour hasSelection ici**
-        if (currentTool == RECT_SELECT && !selectionRect.isNull())
+        // Met à jour _hasSelection
+        if (currentTool == RECT_SELECT && !selectionRect.isNull()) {
             _hasSelection = true;
-        else if (currentTool == LASSO_SELECT && !lassoPolygon.isEmpty())
+        } else if (currentTool == LASSO_SELECT && !lassoPolygon.isEmpty()) {
             _hasSelection = true;
-        else
+
+            // Recalculer selectionRect pour englober le polygone
+            int minX = lassoPolygon[0].x(), minY = lassoPolygon[0].y();
+            int maxX = lassoPolygon[0].x(), maxY = lassoPolygon[0].y();
+            for (const QPoint &p : lassoPolygon) {
+                if (p.x() < minX) minX = p.x();
+                if (p.y() < minY) minY = p.y();
+                if (p.x() > maxX) maxX = p.x();
+                if (p.y() > maxY) maxY = p.y();
+            }
+            selectionRect = QRect(QPoint(minX, minY), QPoint(maxX, maxY));
+        } else {
             _hasSelection = false;
+        }
+
         emit strokeFinished();
+        update();
     }
 }
 
@@ -1045,13 +1060,21 @@ void MainWindow::cutSelection()
     pushUndoForActiveLayer();
     selectionBuffer = canvas->getSelectionImage();
 
-    // Clear selection on layer
     QPainter p(&layers[activeLayerIndex].image);
     p.setCompositionMode(QPainter::CompositionMode_Clear);
-    p.fillRect(canvas->getSelectionRect(), Qt::transparent);
+
+    if (canvas->isRectSelection()) {
+        p.fillRect(canvas->getSelectionRect(), Qt::transparent);
+    } else if (canvas->isLassoSelection()) {
+        QPainterPath path;
+        path.addPolygon(canvas->getLassoPolygon());
+        p.fillPath(path, Qt::transparent);
+    }
+
     compositeLayers();
     statusLabel->setText("Selection cut");
 }
+
 
 void MainWindow::pasteSelection()
 {
