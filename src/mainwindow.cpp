@@ -7,8 +7,11 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QHBoxLayout>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QVBoxLayout>
 #include <QPainter>
+#include <QActionGroup>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QFileInfo>
@@ -49,8 +52,7 @@ Canvas::Canvas(QWidget *parent)
 void Canvas::setCompositeImage(const QImage &c)
 {
     composite = c;
-    // If target image is null, set targetImg to composite's backing image pointer is not possible,
-    // but MainWindow calls setTargetImage separately. Just repaint composite.
+
     update();
 }
 
@@ -86,51 +88,34 @@ void Canvas::setTool(Tool t)
     else setCursor(QCursor(Qt::CrossCursor));
 }
 
-void Canvas::paintEvent(QPaintEvent *)
+void Canvas::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::Antialiasing);
 
-    if (composite.isNull()) {
-        painter.fillRect(rect(), Qt::white);
-        return;
-    }
+    painter.drawImage(imageOffset.x(), imageOffset.y(),
+                      composite.scaled(composite.size()*zoom));
 
-    // Compute displayed size with zoom
-    int dispW = int(composite.width() * zoom);
-    int dispH = int(composite.height() * zoom);
+    QPen selPen(Qt::DashLine);
+    selPen.setColor(Qt::blue);
+    selPen.setWidth(1);
+    painter.setPen(selPen);
 
-    // Center the image inside the widget
-    int x = (width() - dispW) / 2;
-    int y = (height() - dispH) / 2;
-    imageOffset = QPoint(x, y);
-
-    QRect targetRect(x, y, dispW, dispH);
-    painter.drawImage(targetRect, composite);
-
-    // Optionally: draw a live preview for shape tools (rectangle/ellipse/line)
-    // We draw preview on top, in widget coords converted from startPoint (image coords).
-    if ((currentTool == RECTANGLE || currentTool == CIRCLE || currentTool == LINE)
-        && startPoint != QPoint(-1, -1)) {
-
-        // map image coords to widget coords (reverse of widgetToImage)
-        auto imageToWidget = [&](const QPoint &ip) -> QPoint {
-            double wx = imageOffset.x() + ip.x() * zoom;
-            double wy = imageOffset.y() + ip.y() * zoom;
-            return QPoint(int(wx), int(wy));
-        };
-
-        QPen previewPen(penColor);
-        previewPen.setStyle(Qt::DashLine);
-        previewPen.setWidth(std::max(1, penWidth));
-        painter.setPen(previewPen);
-
-        QPoint wStart = imageToWidget(startPoint);
-        QPoint wNow = mapFromGlobal(QCursor::pos()); // fallback; better to track last mouse pos in widget coords
-        // But we don't have the current widget mouse pos here; we will not attempt live preview
-        // to keep code simple and robust. (Live preview can be added later.)
+    if (currentTool == RECT_SELECT && !selectionRect.isNull()) {
+        QRect wRect = QRect(
+            imageOffset + selectionRect.topLeft()*zoom,
+            imageOffset + selectionRect.bottomRight()*zoom
+        );
+        painter.drawRect(wRect.normalized());
+    } else if (currentTool == LASSO_SELECT && !lassoPolygon.isEmpty()) {
+        QPolygon wPoly;
+        for (const QPoint &p : lassoPolygon) {
+            wPoly << QPoint(imageOffset.x() + p.x()*zoom, imageOffset.y() + p.y()*zoom);
+        }
+        painter.drawPolygon(wPoly);
     }
 }
+
 
 QPoint Canvas::widgetToImage(const QPoint &p, const QSize &imgSize)
 {
@@ -151,23 +136,40 @@ QPoint Canvas::widgetToImage(const QPoint &p, const QSize &imgSize)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) {
-        if (!targetImg) return;
-        QSize imgSize = targetImg->size();
-        QPoint imgPt = widgetToImage(event->pos(), imgSize);
-        if (imgPt == QPoint(-1, -1)) return;
+    if (event->button() == Qt::LeftButton && targetImg) {
+        QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+        if (imgPt == QPoint(-1,-1)) return;
 
-        // store points in IMAGE coordinates
-        lastPoint = imgPt;
         startPoint = imgPt;
+        lastPoint = imgPt;
 
-        // notify MainWindow to push undo snapshot BEFORE modifying
-        emit strokeStarted();
+        if (currentTool == RECT_SELECT) {
+            selecting = true;
+            selectionRect = QRect(imgPt, imgPt);
+        } else if (currentTool == LASSO_SELECT) {
+            selecting = true;
+            lassoPolygon.clear();
+            lassoPolygon << imgPt;
+        }
+
+        emit strokeStarted(); // pour undo
     }
 }
 
+
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (!(event->buttons() & Qt::LeftButton) || !targetImg) return;
+    QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+    if (imgPt == QPoint(-1,-1)) return;
+
+    if (currentTool == RECT_SELECT && selecting) {
+        selectionRect.setBottomRight(imgPt);
+        update(); // redraw pour visualiser
+    } else if (currentTool == LASSO_SELECT && selecting) {
+        lassoPolygon << imgPt;
+        update(); // redraw
+    }
     if (!(event->buttons() & Qt::LeftButton) || !targetImg) return;
     QSize imgSize = targetImg->size();
     QPoint imgP = widgetToImage(event->pos(), imgSize);
@@ -207,47 +209,28 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
 void Canvas::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (!targetImg) return;
-    if (event->button() == Qt::LeftButton) {
-        QSize imgSize = targetImg->size();
-        QPoint endPt = widgetToImage(event->pos(), imgSize);
-        if (endPt == QPoint(-1, -1)) {
-            // If release outside image, treat as no-op for shapes
-            lastPoint = QPoint(-1, -1);
-            startPoint = QPoint(-1, -1);
-            emit strokeFinished();
-            return;
-        }
-
-        if (currentTool == LINE || currentTool == RECTANGLE || currentTool == CIRCLE) {
-            // commit the shape using image coords startPoint -> endPt
-            QPainter painter(targetImg);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            QPen pen(penColor, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            painter.setPen(pen);
-
-            if (currentTool == LINE) {
-                painter.drawLine(startPoint, endPt);
-            } else if (currentTool == RECTANGLE) {
-                QRect r(startPoint, endPt);
-                painter.drawRect(r.normalized());
-            } else if (currentTool == CIRCLE) {
-                QRect r(startPoint, endPt);
-                painter.drawEllipse(r.normalized());
+    if (event->button() == Qt::LeftButton && selecting) {
+        QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+        if (imgPt != QPoint(-1,-1)) {
+            if (currentTool == RECT_SELECT) {
+                selectionRect.setBottomRight(imgPt);
+            } else if (currentTool == LASSO_SELECT) {
+                lassoPolygon << imgPt;
             }
-            // reset points
-            lastPoint = QPoint(-1, -1);
-            startPoint = QPoint(-1, -1);
-
-            emit strokeFinished();
-        } else {
-            // brush/eraser: the release doesn't need extra action (already drawn in mouseMove)
-            lastPoint = QPoint(-1, -1);
-            startPoint = QPoint(-1, -1);
-            emit strokeFinished();
         }
+        selecting = false;
+
+        // **Met à jour hasSelection ici**
+        if (currentTool == RECT_SELECT && !selectionRect.isNull())
+            _hasSelection = true;
+        else if (currentTool == LASSO_SELECT && !lassoPolygon.isEmpty())
+            _hasSelection = true;
+        else
+            _hasSelection = false;
+        emit strokeFinished();
     }
 }
+
 
 void Canvas::resizeEvent(QResizeEvent *event)
 {
@@ -389,6 +372,16 @@ void MainWindow::setupMenu()
     QAction *invert = new QAction("Invert", this);
     connect(invert, &QAction::triggered, this, &MainWindow::invertColors);
     filterMenu->addAction(invert);
+
+    QShortcut *copyShortcut = new QShortcut(QKeySequence("Ctrl+C"), this);
+    connect(copyShortcut, &QShortcut::activated, this, &MainWindow::copySelection);
+
+    QShortcut *cutShortcut = new QShortcut(QKeySequence("Ctrl+X"), this);
+    connect(cutShortcut, &QShortcut::activated, this, &MainWindow::cutSelection);
+
+    QShortcut *pasteShortcut = new QShortcut(QKeySequence("Ctrl+V"), this);
+    connect(pasteShortcut, &QShortcut::activated, this, &MainWindow::pasteSelection);
+
 }
 
 QWidget* createColorBtn(const QColor &color, QObject *receiver, const char *slot)
@@ -406,6 +399,7 @@ void MainWindow::setupToolbarAndPalette()
     QToolBar *tb = addToolBar("Tools");
     tb->setMovable(false);
 
+    // --- Undo / Redo ---
     QAction *undoAct = new QAction("Undo", this);
     undoAct->setShortcut(QKeySequence::Undo);
     connect(undoAct, &QAction::triggered, this, &MainWindow::undo);
@@ -418,46 +412,99 @@ void MainWindow::setupToolbarAndPalette()
 
     tb->addSeparator();
 
+    // --- Outils dessin avec QActionGroup (exclusifs) ---
+    QActionGroup* toolGroup = new QActionGroup(this);
+    toolGroup->setExclusive(true); // un seul actif à la fois
+
+    // Brush
     QAction *brushAct = new QAction("Brush (B)", this);
     brushAct->setShortcut(Qt::Key_B);
+    brushAct->setCheckable(true);
     connect(brushAct, &QAction::triggered, this, &MainWindow::selectBrush);
     tb->addAction(brushAct);
+    toolGroup->addAction(brushAct);
 
+    // Eraser
     QAction *eraserAct = new QAction("Eraser (E)", this);
     eraserAct->setShortcut(Qt::Key_E);
+    eraserAct->setCheckable(true);
     connect(eraserAct, &QAction::triggered, this, &MainWindow::selectEraser);
     tb->addAction(eraserAct);
+    toolGroup->addAction(eraserAct);
 
     tb->addSeparator();
 
-    // shape tools
+    // Shape tools
     QAction *lineAct = new QAction("Line", this);
+    lineAct->setCheckable(true);
     connect(lineAct, &QAction::triggered, [this]() {
         canvas->setTool(Canvas::LINE);
         statusLabel->setText("Line tool");
     });
     tb->addAction(lineAct);
+    toolGroup->addAction(lineAct);
 
     QAction *rectAct = new QAction("Rectangle", this);
+    rectAct->setCheckable(true);
     connect(rectAct, &QAction::triggered, [this]() {
         canvas->setTool(Canvas::RECTANGLE);
         statusLabel->setText("Rectangle tool");
     });
     tb->addAction(rectAct);
+    toolGroup->addAction(rectAct);
 
     QAction *circleAct = new QAction("Circle", this);
+    circleAct->setCheckable(true);
     connect(circleAct, &QAction::triggered, [this]() {
         canvas->setTool(Canvas::CIRCLE);
         statusLabel->setText("Circle tool");
     });
     tb->addAction(circleAct);
+    toolGroup->addAction(circleAct);
 
     tb->addSeparator();
 
-    // Day 5 transforms & zoom
+    // Selection tools
+    QAction *rectSelAct = new QAction("Rect Select", this);
+    rectSelAct->setCheckable(true);
+    connect(rectSelAct, &QAction::triggered, [this]() {
+        canvas->setTool(Canvas::RECT_SELECT);
+        statusLabel->setText("Rectangular selection tool");
+    });
+    tb->addAction(rectSelAct);
+    toolGroup->addAction(rectSelAct);
+
+    QAction *lassoSelAct = new QAction("Lasso Select", this);
+    lassoSelAct->setCheckable(true);
+    connect(lassoSelAct, &QAction::triggered, [this]() {
+        canvas->setTool(Canvas::LASSO_SELECT);
+        statusLabel->setText("Free selection (lasso) tool");
+    });
+    tb->addAction(lassoSelAct);
+    toolGroup->addAction(lassoSelAct);
+
+    tb->addSeparator();
+
+    // Copy / Cut / Paste (non exclusif)
+    QAction *copyAct = new QAction("Copy", this);
+    connect(copyAct, &QAction::triggered, this, &MainWindow::copySelection);
+    tb->addAction(copyAct);
+
+    QAction *cutAct = new QAction("Cut", this);
+    connect(cutAct, &QAction::triggered, this, &MainWindow::cutSelection);
+    tb->addAction(cutAct);
+
+    QAction *pasteAct = new QAction("Paste", this);
+    connect(pasteAct, &QAction::triggered, this, &MainWindow::pasteSelection);
+    tb->addAction(pasteAct);
+
+    tb->addSeparator();
+
+    // --- Zoom / Rotation / Flip (non exclusifs) ---
     QAction *zoomInAct = new QAction("Zoom +", this);
     connect(zoomInAct, &QAction::triggered, this, &MainWindow::zoomIn);
     tb->addAction(zoomInAct);
+
     QAction *zoomOutAct = new QAction("Zoom -", this);
     connect(zoomOutAct, &QAction::triggered, this, &MainWindow::zoomOut);
     tb->addAction(zoomOutAct);
@@ -480,7 +527,7 @@ void MainWindow::setupToolbarAndPalette()
 
     tb->addSeparator();
 
-    // brush size slider
+    // --- Brush size ---
     QLabel *szLabel = new QLabel("Size:", this);
     tb->addWidget(szLabel);
     QSlider *sizeSlider = new QSlider(Qt::Horizontal, this);
@@ -492,7 +539,7 @@ void MainWindow::setupToolbarAndPalette()
 
     tb->addSeparator();
 
-    // palette
+    // --- Palette ---
     QList<QColor> palette = { Qt::black, Qt::red, Qt::green, Qt::blue, QColor("#FFA500") };
     for (const QColor &c : palette) {
         QWidget *btn = createColorBtn(c, this, SLOT(setColorFromButton()));
@@ -502,6 +549,14 @@ void MainWindow::setupToolbarAndPalette()
     QAction *pickColor = new QAction("Pick Color...", this);
     tb->addAction(pickColor);
     connect(pickColor, &QAction::triggered, this, &MainWindow::chooseColor);
+
+    // --- Style pour highlight automatique des outils ---
+    tb->setStyleSheet(
+        "QToolButton:checked { background-color: lightblue; border: 2px solid blue; }"
+    );
+
+    // --- Initial tool sélectionné ---
+    brushAct->setChecked(true);
 }
 
 void MainWindow::openFile()
@@ -606,14 +661,19 @@ void MainWindow::activateLayer(int uiRow)
 void MainWindow::compositeLayers()
 {
     if (layers.isEmpty()) return;
-    QImage comp = layers[0].image; // start with bottom
+
+    QImage comp = layers[0].image;
     QPainter p(&comp);
-    // paint layers 1..n-1 on top
+
     for (int i = 1; i < layers.size(); ++i) {
+        p.setOpacity(layers[i].opacity);
         p.drawImage(0, 0, layers[i].image);
     }
+    p.setOpacity(1.0);
+
     canvas->setCompositeImage(comp);
 }
+
 
 void MainWindow::pushUndoForActiveLayer()
 {
@@ -883,4 +943,133 @@ void MainWindow::invertColors()
     }
 }
 
-// end of file
+void MainWindow::copySelection()
+{
+    if (!canvas->hasSelection()) return; // ← utilise Canvas
+    selectionBuffer = canvas->getSelectionImage();
+    statusLabel->setText("Selection copied");
+}
+
+void MainWindow::cutSelection()
+{
+    if (!canvas->hasSelection()) return;
+    pushUndoForActiveLayer();
+    selectionBuffer = canvas->getSelectionImage();
+
+    // Clear selection on layer
+    QPainter p(&layers[activeLayerIndex].image);
+    p.setCompositionMode(QPainter::CompositionMode_Clear);
+    p.fillRect(canvas->getSelectionRect(), Qt::transparent);
+    compositeLayers();
+    statusLabel->setText("Selection cut");
+}
+
+void MainWindow::pasteSelection()
+{
+    if (selectionBuffer.isNull()) return;
+    pushUndoForActiveLayer();
+    QPainter p(&layers[activeLayerIndex].image);
+    p.drawImage(canvas->getSelectionRect().topLeft(), selectionBuffer);
+    compositeLayers();
+    statusLabel->setText("Selection pasted");
+}
+
+void MainWindow::onLayerContextMenu(const QPoint &pos)
+{
+    // item sur lequel on a fait clic droit
+    QListWidgetItem *item = layerListWidget->itemAt(pos);
+    if (!item) return;
+
+    // créer menu
+    QMenu menu(this);
+    QAction *dupAct = menu.addAction("Duplicate Layer");
+    QAction *delAct = menu.addAction("Delete Layer");
+    QAction *renameAct = menu.addAction("Rename Layer");
+    QAction *opacityAct = menu.addAction("Change Opacity");
+
+    QAction *selected = menu.exec(layerListWidget->mapToGlobal(pos));
+    if (!selected) return;
+
+    // stocker index de layer actif temporairement
+    int uiIndex = layerListWidget->row(item);
+    int layerIndex = layers.size() - 1 - uiIndex;
+    activeLayerIndex = layerIndex;
+    canvas->setTargetImage(&layers[activeLayerIndex].image);
+
+    if (selected == dupAct) duplicateLayer();
+    else if (selected == delAct) deleteLayer();
+    else if (selected == renameAct) renameLayer();
+    else if (selected == opacityAct) changeLayerOpacity();
+}
+
+void MainWindow::duplicateLayer()
+{
+    if (activeLayerIndex < 0 || activeLayerIndex >= layers.size()) return;
+    Layer copy = layers[activeLayerIndex];
+    copy.name += " Copy";
+    layers.append(copy);
+
+    // mettre en haut dans l'UI
+    layerListWidget->insertItem(0, copy.name);
+    layerListWidget->setCurrentRow(0);
+
+    activeLayerIndex = layers.size() - 1;
+    canvas->setTargetImage(&layers[activeLayerIndex].image);
+    compositeLayers();
+    statusLabel->setText("Layer duplicated: " + copy.name);
+}
+
+void MainWindow::deleteLayer()
+{
+    if (layers.size() <= 1) {
+        QMessageBox::information(this, "Cannot remove", "Need at least one layer.");
+        return;
+    }
+
+    int idx = activeLayerIndex;
+    layers.removeAt(idx);
+
+    // UI update
+    int uiIndex = layerListWidget->count() - 1 - idx;
+    delete layerListWidget->takeItem(uiIndex);
+
+    activeLayerIndex = layers.size() - 1; // top layer
+    layerListWidget->setCurrentRow(0);
+    canvas->setTargetImage(&layers[activeLayerIndex].image);
+    compositeLayers();
+    statusLabel->setText("Layer removed, active: " + layers[activeLayerIndex].name);
+}
+
+void MainWindow::renameLayer()
+{
+    bool ok;
+    QString newName = QInputDialog::getText(this, "Rename Layer",
+                                            "New name:",
+                                            QLineEdit::Normal,
+                                            layers[activeLayerIndex].name,
+                                            &ok);
+    if (ok && !newName.isEmpty()) {
+        layers[activeLayerIndex].name = newName;
+
+        // update UI
+        int uiIndex = layerListWidget->count() - 1 - activeLayerIndex;
+        layerListWidget->item(uiIndex)->setText(newName);
+        statusLabel->setText("Layer renamed: " + newName);
+    }
+}
+
+void MainWindow::changeLayerOpacity()
+{
+    bool ok;
+    double op = QInputDialog::getDouble(
+        this, "Layer Opacity",
+        "Opacity (0.0 - 1.0):",
+        layers[activeLayerIndex].opacity,
+        0.0, 1.0, 2, &ok);
+
+    if (ok) {
+        layers[activeLayerIndex].opacity = op;
+        compositeLayers();
+        statusLabel->setText(QString("Opacity: %1").arg(op));
+    }
+}

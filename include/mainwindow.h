@@ -3,10 +3,12 @@
 
 #include <QMainWindow>
 #include <QWidget>
+#include <QShortcut>
 #include <QImage>
 #include <QColor>
 #include <QPoint>
 #include <QLabel>
+#include <QPainter>  
 #include <QList>
 #include <QVector>
 #include <QListWidget>
@@ -20,6 +22,7 @@ struct Layer {
     QImage image;
     QVector<QImage> undoStack;
     QVector<QImage> redoStack;
+    double opacity = 1.0;
 };
 
 class Canvas : public QWidget {
@@ -45,8 +48,29 @@ public:
     void setZoom(double z);
 
     // tools
-    enum Tool { BRUSH, ERASER, LINE, RECTANGLE, CIRCLE };
+    enum Tool { BRUSH, ERASER, LINE, RECTANGLE, CIRCLE, RECT_SELECT, LASSO_SELECT };
     void setTool(Tool t);
+    bool hasSelection() const { return _hasSelection; }
+    QRect getSelectionRect() const { return selectionRect; }
+    QImage getSelectionImage() const
+    {
+        if (!hasSelection()) return QImage();  // <-- appeler la fonction
+
+        if (currentTool == RECT_SELECT)
+            return targetImg->copy(selectionRect);
+        else if (currentTool == LASSO_SELECT) {
+            QImage img(selectionRect.size(), QImage::Format_ARGB32_Premultiplied);
+            img.fill(Qt::transparent);
+            QPainter painter(&img);  // QPainter connu grâce à l'include
+            QPolygon poly;
+            for (const QPoint &p : lassoPolygon)
+                poly << (p - selectionRect.topLeft());
+            painter.setClipRegion(QRegion(poly));
+            painter.drawImage(-selectionRect.topLeft(), *targetImg);
+            return img;
+        }
+        return QImage();
+    }
 
 signals:
     void strokeStarted(); // emitted on mouse press (before modifying)
@@ -60,6 +84,9 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
+    QRect selectionRect;
+    QPolygon lassoPolygon;   // pour lasso
+    bool selecting = false;
     QImage composite;  
     QPoint imageOffset;  // composited image for display
     QImage *targetImg;  // pointer to active layer image (may be nullptr)
@@ -72,6 +99,7 @@ private:
     double zoom;
 
     Tool currentTool;
+    bool _hasSelection = false;
 
     void ensureTargetSizeMatchesWidget();
     QPoint widgetToImage(const QPoint &p, const QSize &imgSize);
@@ -121,6 +149,17 @@ private slots:
     void grayscale();
     void invertColors();
 
+    void pasteSelection();
+    void copySelection();
+    void cutSelection();
+
+    void onLayerContextMenu(const QPoint &pos);
+    void duplicateLayer();
+    void deleteLayer();
+    void renameLayer();
+    void changeLayerOpacity();
+
+
 private:
     // UI helpers
     void setupMenu();
@@ -146,6 +185,12 @@ private:
 
     // zoom factor (MainWindow level)
     double zoomFactor;
+
+    QImage selectionBuffer;      // buffer temporaire pour copier/couper
+    QRect selectionRect;         // zone sélectionnée
+    QPolygon lassoPolygon;       // pour lasso
+
+    
 };
 
 #endif // MAINWINDOW_H
