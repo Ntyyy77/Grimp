@@ -3,6 +3,8 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QFontComboBox>
+#include <QSpinBox>
 #include <QFileDialog>
 #include <QStatusBar>
 #include <QToolBar>
@@ -96,6 +98,26 @@ void Canvas::paintEvent(QPaintEvent *event)
     painter.drawImage(imageOffset.x(), imageOffset.y(),
                       composite.scaled(composite.size()*zoom));
 
+
+    for (int i = 0; i < textItems.size(); ++i) {
+        const TextItem &t = textItems[i];
+
+        painter.setFont(t.font);
+        painter.setPen(t.color);
+
+        QPoint wPos(imageOffset.x() + t.position.x()*zoom,
+                    imageOffset.y() + t.position.y()*zoom);
+
+        painter.drawText(wPos, t.text);
+
+        if (t.selected) {
+            painter.setPen(QPen(Qt::blue, 1, Qt::DashLine));
+            QRect scaledRect = QRect(wPos, t.boundingRect.size() * zoom);
+            painter.drawRect(scaledRect);
+        }
+    }
+
+
     QPen selPen(Qt::DashLine);
     selPen.setColor(Qt::blue);
     selPen.setWidth(1);
@@ -136,6 +158,47 @@ QPoint Canvas::widgetToImage(const QPoint &p, const QSize &imgSize)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
+    if (currentTool == TEXT && event->button() == Qt::LeftButton && targetImg) {
+        QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+        if (imgPt == QPoint(-1,-1)) return;
+
+        // Sélection texte existant
+        activeTextIndex = -1;
+        for (int i = textItems.size() - 1; i >= 0; --i) {
+            if (textItems[i].boundingRect
+                    .translated(textItems[i].position)
+                    .contains(imgPt)) {
+                activeTextIndex = i;
+                textItems[i].selected = true;
+                lastPoint = imgPt;
+                update();
+                return;
+            }
+        }
+
+        // Nouveau texte
+        bool ok;
+        QString txt = QInputDialog::getText(
+            this, "Add Text", "Text:", QLineEdit::Normal, "", &ok
+        );
+        if (!ok || txt.isEmpty()) return;
+
+        TextItem item;
+        item.text = txt;
+        item.position = imgPt;
+        item.font = QFont("Arial", 24);
+        item.color = penColor;
+
+        QFontMetrics fm(item.font);
+        item.boundingRect = fm.boundingRect(item.text);
+
+        textItems.append(item);
+        activeTextIndex = textItems.size() - 1;
+
+        update();
+        return;
+    }
+
     if (event->button() == Qt::LeftButton && targetImg) {
         QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
         if (imgPt == QPoint(-1,-1)) return;
@@ -159,6 +222,19 @@ void Canvas::mousePressEvent(QMouseEvent *event)
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (currentTool == TEXT && activeTextIndex >= 0 &&
+        (event->buttons() & Qt::LeftButton)) {
+
+        QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+        if (imgPt == QPoint(-1,-1)) return;
+
+        QPoint delta = imgPt - lastPoint;
+        textItems[activeTextIndex].position += delta;
+        lastPoint = imgPt;
+
+        update();
+        return;
+    }
     if (!(event->buttons() & Qt::LeftButton) || !targetImg) return;
     QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
     if (imgPt == QPoint(-1,-1)) return;
@@ -195,15 +271,9 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
             painter.setPen(pen);
             painter.drawLine(lastPoint, imgP);
         }
-
-        // update lastPoint (image coords)
         lastPoint = imgP;
-
-        // notify MainWindow to recomposite and update display
         emit strokeFinished();
     } else {
-        // For shapes: we don't commit until mouse release (no live preview here).
-        // Could implement preview by storing current mouse widget pos and calling update().
     }
 }
 
@@ -557,6 +627,18 @@ void MainWindow::setupToolbarAndPalette()
 
     // --- Initial tool sélectionné ---
     brushAct->setChecked(true);
+
+    QAction *textAct = new QAction("Text (T)", this);
+    textAct->setShortcut(Qt::Key_T);
+    textAct->setCheckable(true);
+    connect(textAct, &QAction::triggered, [this]() {
+        canvas->commitTextItems();      // sécurise le texte précédent
+        canvas->setTool(Canvas::TEXT);
+        statusLabel->setText("Text tool");
+    });
+    tb->addAction(textAct);
+    toolGroup->addAction(textAct);
+
 }
 
 void MainWindow::openFile()
@@ -738,6 +820,7 @@ void MainWindow::redo()
 
 void MainWindow::selectBrush()
 {
+    canvas->commitTextItems();
     canvas->setEraserMode(false);
     canvas->setPenColor(brushColor);
     canvas->setPenWidth(brushSize);
@@ -747,6 +830,7 @@ void MainWindow::selectBrush()
 
 void MainWindow::selectEraser()
 {
+    canvas->commitTextItems();
     canvas->setEraserMode(true);
     canvas->setPenWidth(brushSize);
     canvas->setTool(Canvas::ERASER);
@@ -1072,4 +1156,82 @@ void MainWindow::changeLayerOpacity()
         compositeLayers();
         statusLabel->setText(QString("Opacity: %1").arg(op));
     }
+}
+
+void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (currentTool != TEXT || !targetImg) return;
+
+    QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+    for (TextItem &t : textItems) {
+        QRect itemRect = t.boundingRect.translated(t.position);
+        if (itemRect.contains(imgPt)) {
+
+            // Dialog pour éditer texte
+            QDialog dlg(this);
+            dlg.setWindowTitle("Edit Text");
+            QVBoxLayout *lay = new QVBoxLayout(&dlg);
+
+            QLineEdit *line = new QLineEdit(t.text, &dlg);
+            lay->addWidget(line);
+
+            QPushButton *colorBtn = new QPushButton("Choose Color", &dlg);
+            lay->addWidget(colorBtn);
+
+            QFontComboBox *fontCombo = new QFontComboBox(&dlg);
+            fontCombo->setCurrentFont(t.font);
+            lay->addWidget(fontCombo);
+
+            QSpinBox *sizeSpin = new QSpinBox(&dlg);
+            sizeSpin->setRange(6, 200);
+            sizeSpin->setValue(t.font.pointSize());
+            lay->addWidget(sizeSpin);
+
+            QHBoxLayout *btnLayout = new QHBoxLayout();
+            QPushButton *okBtn = new QPushButton("OK", &dlg);
+            QPushButton *cancelBtn = new QPushButton("Cancel", &dlg);
+            btnLayout->addWidget(okBtn);
+            btnLayout->addWidget(cancelBtn);
+            lay->addLayout(btnLayout);
+
+            QColor chosenColor = t.color;
+
+            connect(colorBtn, &QPushButton::clicked, [&]() {
+                QColor c = QColorDialog::getColor(chosenColor, this, "Pick Color");
+                if (c.isValid()) chosenColor = c;
+            });
+            connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+            connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+            if (dlg.exec() == QDialog::Accepted) {
+                t.text = line->text();
+                t.color = chosenColor;
+                t.font = QFont(fontCombo->currentFont().family(), sizeSpin->value());
+                QFontMetrics fm(t.font);
+                t.boundingRect = fm.boundingRect(t.text);
+                update();
+            }
+            return;
+        }
+    }
+}
+
+
+void Canvas::commitTextItems()
+{
+    if (!targetImg || textItems.isEmpty()) return;
+
+    QPainter p(targetImg);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    for (const TextItem &t : textItems) {
+        p.setFont(t.font);
+        p.setPen(t.color);
+        p.drawText(t.position, t.text);
+    }
+
+    textItems.clear();
+    activeTextIndex = -1;
+    emit strokeFinished();
+    update();
 }

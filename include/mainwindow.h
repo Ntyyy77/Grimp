@@ -13,10 +13,18 @@
 #include <QVector>
 #include <QListWidget>
 #include <QSlider>
-
 #include <QStack>
 
-// Small Layer struct: name + image + undo/redo stacks
+
+struct TextItem {
+    QString text;
+    QPoint position;      // en coordonnées image
+    QFont font;
+    QColor color;
+    QRect boundingRect;   // pour sélection / déplacement
+    bool selected = false;
+};
+
 struct Layer {
     QString name;
     QImage image;
@@ -48,7 +56,7 @@ public:
     void setZoom(double z);
 
     // tools
-    enum Tool { BRUSH, ERASER, LINE, RECTANGLE, CIRCLE, RECT_SELECT, LASSO_SELECT };
+    enum Tool { BRUSH, ERASER, LINE, RECTANGLE, CIRCLE, RECT_SELECT, LASSO_SELECT, TEXT };
     void setTool(Tool t);
     bool hasSelection() const { return _hasSelection; }
     QRect getSelectionRect() const { return selectionRect; }
@@ -71,6 +79,7 @@ public:
         }
         return QImage();
     }
+    void commitTextItems();
 
 signals:
     void strokeStarted(); // emitted on mouse press (before modifying)
@@ -82,6 +91,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override; 
 
 private:
     QRect selectionRect;
@@ -95,6 +105,10 @@ private:
     int penWidth;
     QColor penColor;
     bool eraserMode;
+
+    QVector<TextItem> textItems;
+    int activeTextIndex = -1;
+
 
     double zoom;
 
