@@ -346,6 +346,11 @@ MainWindow::MainWindow(QWidget *parent)
     layerListWidget->setFixedWidth(220);
     leftLayout->addWidget(new QLabel("Layers", this));
     leftLayout->addWidget(layerListWidget);
+    // après avoir créé layerListWidget
+    layerListWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(layerListWidget, &QListWidget::customContextMenuRequested,
+            this, &MainWindow::onLayerContextMenu);
+
 
     // layer buttons
     QPushButton *addBtn = new QPushButton("Add Layer", this);
