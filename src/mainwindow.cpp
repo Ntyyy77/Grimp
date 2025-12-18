@@ -1235,3 +1235,39 @@ void Canvas::commitTextItems()
     emit strokeFinished();
     update();
 }
+
+void MainWindow::openPNGAsNewLayer()
+{
+    QString fileName = QFileDialog::getOpenFileName(this,
+        "Open PNG as Layer",
+        QString(),
+        "PNG Images (*.png)");
+
+    if (fileName.isEmpty()) return;
+
+    QImage loaded;
+    if (!loaded.load(fileName)) {
+        QMessageBox::warning(this, "Open failed", "Could not open PNG image.");
+        return;
+    }
+
+    // Créer un nouveau layer
+    Layer l;
+    l.name = QFileInfo(fileName).baseName(); // nom du fichier sans extension
+    l.image = loaded.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+    layers.append(l);
+
+    // Ajouter en haut dans l'UI
+    layerListWidget->insertItem(0, l.name);
+    layerListWidget->setCurrentRow(0);
+
+    // Activer le nouveau layer
+    activeLayerIndex = layers.size() - 1;
+    canvas->setTargetImage(&layers[activeLayerIndex].image);
+
+    // Mettre à jour le composite
+    compositeLayers();
+
+    statusLabel->setText(fileName + " loaded into new layer: " + l.name);
+}

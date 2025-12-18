@@ -179,6 +179,7 @@ private:
     void setupMenu();
     void setupToolbarAndPalette();
     void setupLayerPanel();
+    void openPNGAsNewLayer();
 
     // layers & compositing
     void compositeLayers();              // recompute composite (paint layers bottom->top)
