@@ -137,6 +137,36 @@ void Canvas::paintEvent(QPaintEvent *event)
         }
         painter.drawPolygon(wPoly);
     }
+    if (currentTool == CIRCLE && startPoint != QPoint(-1,-1) && lastPoint != QPoint(-1,-1)) {
+        QPen pen(Qt::black, 1, Qt::DashLine);
+        painter.setPen(pen);
+        QRect r(startPoint, lastPoint);
+        painter.drawEllipse(QRect(
+            imageOffset + r.topLeft()*zoom,
+            r.size()*zoom
+        ));
+    }
+    if ((currentTool == LINE || currentTool == RECTANGLE) &&
+        startPoint != QPoint(-1,-1) && lastPoint != QPoint(-1,-1)) {
+
+        QPen pen(Qt::black, 1, Qt::DashLine);
+        painter.setPen(pen);
+
+        QRect r(startPoint, lastPoint);
+        QRect wRect(
+            imageOffset + r.topLeft()*zoom,
+            r.size()*zoom
+        );
+
+        if (currentTool == LINE) {
+            painter.drawLine(
+                imageOffset + startPoint*zoom,
+                imageOffset + lastPoint*zoom
+            );
+        } else if (currentTool == RECTANGLE) {
+            painter.drawRect(wRect.normalized());
+        }
+    }
 }
 
 
@@ -159,6 +189,25 @@ QPoint Canvas::widgetToImage(const QPoint &p, const QSize &imgSize)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
+    if (currentTool == EYEDROPPER && event->button() == Qt::LeftButton) {
+        QPoint imgPt = widgetToImage(event->pos(), composite.size());
+        if (imgPt == QPoint(-1,-1)) return;
+
+        QColor picked = QColor::fromRgba(composite.pixel(imgPt));
+        emit colorPicked(picked);
+        return;
+    }
+
+    if (currentTool == BUCKET && event->button() == Qt::LeftButton && targetImg) {
+        QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
+        if (imgPt == QPoint(-1,-1)) return;
+
+        emit strokeStarted();
+        floodFill(imgPt, penColor);
+        emit strokeFinished();
+        return;
+    }
+
     if (currentTool == TEXT && event->button() == Qt::LeftButton && targetImg) {
         QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
         if (imgPt == QPoint(-1,-1)) return;
@@ -210,19 +259,44 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         if (currentTool == RECT_SELECT) {
             selecting = true;
             selectionRect = QRect(imgPt, imgPt);
-        } else if (currentTool == LASSO_SELECT) {
+            emit strokeStarted();
+        }
+        else if (currentTool == LASSO_SELECT) {
             selecting = true;
             lassoPolygon.clear();
             lassoPolygon << imgPt;
+            emit strokeStarted();
         }
-
-        emit strokeStarted(); // pour undo
     }
+
+    if ((currentTool == CIRCLE ||
+        currentTool == LINE ||
+        currentTool == RECTANGLE) &&
+        event->button() == Qt::LeftButton && targetImg) {
+
+        startPoint = widgetToImage(event->pos(), targetImg->size());
+        lastPoint = startPoint;
+        emit strokeStarted();
+        return;
+    }
+
 }
 
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (!targetImg) return;
+
+    // --- Shapes preview ---
+    if ((currentTool == CIRCLE || currentTool == LINE || currentTool == RECTANGLE) &&
+        (event->buttons() & Qt::LeftButton)) {
+
+        lastPoint = widgetToImage(event->pos(), targetImg->size());
+        update();
+        return;
+    }
+
+    // --- Text move ---
     if (currentTool == TEXT && activeTextIndex >= 0 &&
         (event->buttons() & Qt::LeftButton)) {
 
@@ -232,54 +306,72 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         QPoint delta = imgPt - lastPoint;
         textItems[activeTextIndex].position += delta;
         lastPoint = imgPt;
-
         update();
         return;
     }
-    if (!(event->buttons() & Qt::LeftButton) || !targetImg) return;
-    QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
-    if (imgPt == QPoint(-1,-1)) return;
 
+    if (!(event->buttons() & Qt::LeftButton)) return;
+
+    QPoint imgP = widgetToImage(event->pos(), targetImg->size());
+    if (imgP == QPoint(-1,-1)) return;
+
+    // --- Selection ---
     if (currentTool == RECT_SELECT && selecting) {
-        selectionRect.setBottomRight(imgPt);
-        update(); // redraw pour visualiser
-    } else if (currentTool == LASSO_SELECT && selecting) {
-        lassoPolygon << imgPt;
-        update(); // redraw
+        selectionRect.setBottomRight(imgP);
+        update();
+        return;
     }
-    if (!(event->buttons() & Qt::LeftButton) || !targetImg) return;
-    QSize imgSize = targetImg->size();
-    QPoint imgP = widgetToImage(event->pos(), imgSize);
-    if (imgP == QPoint(-1, -1)) {
-        // out of image bounds: ignore movement
+    if (currentTool == LASSO_SELECT && selecting) {
+        lassoPolygon << imgP;
+        update();
         return;
     }
 
-    // For brush/eraser: draw as mouse moves (using image coords)
+    // --- Brush / Eraser ---
     if (currentTool == BRUSH || currentTool == ERASER) {
         QPainter painter(targetImg);
-        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::Antialiasing);
 
         if (eraserMode) {
-            // Clear using CompositionMode_Clear for proper alpha erasing
             painter.setCompositionMode(QPainter::CompositionMode_Clear);
-            QPen pen(Qt::transparent, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            painter.setPen(pen);
-            painter.drawLine(lastPoint, imgP);
-            painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            painter.setPen(QPen(Qt::transparent, penWidth, Qt::SolidLine, Qt::RoundCap));
         } else {
-            QPen pen(penColor, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            painter.setPen(pen);
-            painter.drawLine(lastPoint, imgP);
+            painter.setPen(QPen(penColor, penWidth, Qt::SolidLine, Qt::RoundCap));
         }
+
+        painter.drawLine(lastPoint, imgP);
         lastPoint = imgP;
-        emit strokeFinished();
-    } else {
     }
 }
 
+
 void Canvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if ((currentTool == CIRCLE ||
+        currentTool == LINE ||
+        currentTool == RECTANGLE) &&
+        targetImg) {
+
+        QPoint endPt = widgetToImage(event->pos(), targetImg->size());
+        if (endPt == QPoint(-1,-1)) return;
+
+        QPainter p(targetImg);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(penColor, penWidth));
+        p.setBrush(Qt::NoBrush);
+
+        if (currentTool == CIRCLE) {
+            p.drawEllipse(QRect(startPoint, endPt).normalized());
+        } else if (currentTool == LINE) {
+            p.drawLine(startPoint, endPt);
+        } else if (currentTool == RECTANGLE) {
+            p.drawRect(QRect(startPoint, endPt).normalized());
+        }
+
+        emit strokeFinished();
+        return;
+    }
+
     if (event->button() == Qt::LeftButton && selecting) {
         QPoint imgPt = widgetToImage(event->pos(), targetImg->size());
         if (imgPt != QPoint(-1,-1)) {
@@ -419,6 +511,14 @@ MainWindow::MainWindow(QWidget *parent)
     // set initial target and composite
     canvas->setTargetImage(&layers[activeLayerIndex].image);
     compositeLayers();
+
+    connect(canvas, &Canvas::colorPicked, this,
+        [this](const QColor &c) {
+            brushColor = c;          // couleur courante du pinceau
+            canvas->setPenColor(c);  // applique au Canvas
+            statusLabel->setText("Picked color: " + c.name());
+        });
+
 
     setupMenu();
     setupToolbarAndPalette();
@@ -658,6 +758,29 @@ void MainWindow::setupToolbarAndPalette()
     });
     tb->addAction(textAct);
     toolGroup->addAction(textAct);
+
+    QAction *bucketAct = new QAction("Bucket (G)", this);
+    bucketAct->setShortcut(Qt::Key_G);
+    bucketAct->setCheckable(true);
+    connect(bucketAct, &QAction::triggered, [this]() {
+        canvas->commitTextItems();
+        canvas->setTool(Canvas::BUCKET);
+        statusLabel->setText("Bucket tool");
+    });
+    tb->addAction(bucketAct);
+    toolGroup->addAction(bucketAct);
+
+    QAction *pickAct = new QAction("Eyedropper (I)", this);
+    pickAct->setShortcut(Qt::Key_I);
+    pickAct->setCheckable(true);
+    connect(pickAct, &QAction::triggered, [this]() {
+        canvas->commitTextItems();
+        canvas->setTool(Canvas::EYEDROPPER);
+        statusLabel->setText("Eyedropper tool");
+    });
+    tb->addAction(pickAct);
+    toolGroup->addAction(pickAct);
+
 
 }
 
@@ -1244,10 +1367,11 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
     }
 }
 
-
 void Canvas::commitTextItems()
 {
     if (!targetImg || textItems.isEmpty()) return;
+
+    emit strokeStarted(); // ← AJOUT IMPORTANT
 
     QPainter p(targetImg);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -1260,9 +1384,11 @@ void Canvas::commitTextItems()
 
     textItems.clear();
     activeTextIndex = -1;
+
     emit strokeFinished();
     update();
 }
+
 
 void MainWindow::openPNGAsNewLayer()
 {
@@ -1298,4 +1424,34 @@ void MainWindow::openPNGAsNewLayer()
     compositeLayers();
 
     statusLabel->setText(fileName + " loaded into new layer: " + l.name);
+}
+
+void Canvas::floodFill(const QPoint &start, const QColor &newColor)
+{
+    if (!targetImg) return;
+
+    QColor oldColor = QColor::fromRgba(targetImg->pixel(start));
+    if (oldColor == newColor) return;
+
+    int w = targetImg->width();
+    int h = targetImg->height();
+
+    QStack<QPoint> stack;
+    stack.push(start);
+
+    while (!stack.isEmpty()) {
+        QPoint pt = stack.pop();
+        if (pt.x() < 0 || pt.y() < 0 || pt.x() >= w || pt.y() >= h)
+            continue;
+
+        if (QColor::fromRgba(targetImg->pixel(pt)) != oldColor)
+            continue;
+
+        targetImg->setPixel(pt, newColor.rgba());
+
+        stack.push(QPoint(pt.x()+1, pt.y()));
+        stack.push(QPoint(pt.x()-1, pt.y()));
+        stack.push(QPoint(pt.x(), pt.y()+1));
+        stack.push(QPoint(pt.x(), pt.y()-1));
+    }
 }

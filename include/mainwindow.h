@@ -62,7 +62,12 @@ public:
     void setZoom(double z);
 
     // tools
-    enum Tool { BRUSH, ERASER, LINE, RECTANGLE, CIRCLE, RECT_SELECT, LASSO_SELECT, TEXT };
+    enum Tool {
+        BRUSH, ERASER, LINE, RECTANGLE, CIRCLE,
+        RECT_SELECT, LASSO_SELECT, TEXT,
+        BUCKET, EYEDROPPER
+    };
+
     void setTool(Tool t);
     bool hasSelection() const { return _hasSelection; }
     QRect getSelectionRect() const { return selectionRect; }
@@ -94,6 +99,7 @@ public:
     void commitTextItems();
 
 signals:
+    void colorPicked(const QColor &color);
     void strokeStarted(); // emitted on mouse press (before modifying)
     void strokeFinished(); // emitted on mouse release (after modifying)
 
@@ -129,6 +135,8 @@ private:
 
     void ensureTargetSizeMatchesWidget();
     QPoint widgetToImage(const QPoint &p, const QSize &imgSize);
+    void floodFill(const QPoint &start, const QColor &newColor);
+
 };
 
 class MainWindow : public QMainWindow {
