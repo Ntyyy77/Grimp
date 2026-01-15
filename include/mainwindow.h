@@ -31,6 +31,7 @@ struct Layer {
     QVector<QImage> undoStack;
     QVector<QImage> redoStack;
     double opacity = 1.0;
+    bool visible = true;
 };
 
 class Canvas : public QWidget {
@@ -57,6 +58,9 @@ public:
     bool isLassoSelection() const { return currentTool == LASSO_SELECT && _hasSelection; }
     QPolygon getLassoPolygon() const { return lassoPolygon; }
 
+    QSize getCanvasSize() const;
+    void setCanvasSize(const QSize &size);
+    void clear();
 
     // zoom
     void setZoom(double z);
@@ -150,6 +154,9 @@ private slots:
     void openFile();
     void saveFile();
     void clearCanvas();
+    void saveProject();
+    void loadProject();
+
 
     // layer actions
     void addLayer();

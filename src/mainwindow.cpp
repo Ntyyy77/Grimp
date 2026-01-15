@@ -572,6 +572,15 @@ void MainWindow::setupMenu()
     QShortcut *pasteShortcut = new QShortcut(QKeySequence("Ctrl+V"), this);
     connect(pasteShortcut, &QShortcut::activated, this, &MainWindow::pasteSelection);
 
+    QAction *saveProjectAct = new QAction("Save Project...", this);
+    connect(saveProjectAct, &QAction::triggered, this, &MainWindow::saveProject);
+    fileMenu->addAction(saveProjectAct);
+
+    QAction *loadProjectAct = new QAction("Load Project...", this);
+    connect(loadProjectAct, &QAction::triggered, this, &MainWindow::loadProject);
+    fileMenu->addAction(loadProjectAct);
+
+    fileMenu->addSeparator();
 }
 
 QWidget* createColorBtn(const QColor &color, QObject *receiver, const char *slot)
@@ -1454,4 +1463,139 @@ void Canvas::floodFill(const QPoint &start, const QColor &newColor)
         stack.push(QPoint(pt.x(), pt.y()+1));
         stack.push(QPoint(pt.x(), pt.y()-1));
     }
+}
+
+void MainWindow::saveProject()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Save Project",
+        "",
+        "GIMP Qt Project (*.gimpqt)"
+    );
+
+    if (fileName.isEmpty())
+        return;
+    
+    if (!fileName.endsWith(".gimpqt"))
+    fileName += ".gimpqt";
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "Error", "Cannot write file");
+        return;
+    }
+
+    QDataStream out(&file);
+    out.setVersion(QDataStream::Qt_5_15);
+
+    // --- Header ---
+    out << QString("GIMPQT");   // magic
+    out << qint32(1);           // version
+
+    QSize canvasSize = canvas->getCanvasSize();
+    out << canvasSize.width();
+    out << canvasSize.height();
+
+    out << qint32(layers.size());
+
+    // --- Layers ---
+    for (const Layer &layer : layers) {
+        out << layer.name;
+        out << layer.opacity;
+        out << layer.visible;
+        out << layer.image;
+    }
+
+    file.close();
+}
+
+
+void MainWindow::loadProject()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Load Project",
+        "",
+        "GIMP Qt Project (*.gimpqt)"
+    );
+
+    if (fileName.isEmpty())
+        return;
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Error", "Cannot open file");
+        return;
+    }
+
+    QDataStream in(&file);
+    in.setVersion(QDataStream::Qt_5_15);
+
+    QString magic;
+    qint32 version;
+    in >> magic >> version;
+
+    if (magic != "GIMPQT") {
+        QMessageBox::warning(this, "Error", "Invalid project file");
+        return;
+    }
+
+    int w, h;
+    in >> w >> h;
+
+    int layerCount;
+    in >> layerCount;
+
+    // --- Clear current project ---
+    layers.clear();
+
+    // --- Rebuild layers ---
+    for (int i = 0; i < layerCount; ++i) {
+        Layer layer;
+        in >> layer.name;
+        in >> layer.opacity;
+        in >> layer.visible;
+        in >> layer.image;
+        layers.push_back(layer);
+    }
+    activeLayerIndex = layers.size() - 1;
+    canvas->setTargetImage(&layers[activeLayerIndex].image);
+
+    layerListWidget->clear();
+    for (int i = layers.size() - 1; i >= 0; --i)
+        layerListWidget->addItem(layers[i].name);
+    layerListWidget->setCurrentRow(0);
+
+    compositeLayers();
+    canvas->update();
+
+    file.close();
+}
+
+QSize Canvas::getCanvasSize() const
+{
+    if (!targetImg) return QSize();
+    return targetImg->size();
+}
+
+void Canvas::setCanvasSize(const QSize &size)
+{
+    if (!targetImg) return;
+
+    QImage newImg(size, QImage::Format_ARGB32_Premultiplied);
+    newImg.fill(Qt::transparent);
+
+    QPainter p(&newImg);
+    p.drawImage(0, 0, *targetImg);
+
+    *targetImg = newImg;
+    update();
+}
+
+
+void Canvas::clear()
+{
+    targetImg = nullptr;
+    update();
 }
