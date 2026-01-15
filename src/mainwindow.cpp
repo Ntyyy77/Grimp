@@ -21,6 +21,7 @@
 #include <QMessageBox>
 #include <QColorDialog>
 #include <QLabel>
+#include <QToolButton>
 #include <QSlider>
 #include <QSplitter>
 #include <cmath>
@@ -50,6 +51,14 @@ Canvas::Canvas(QWidget *parent)
     imageOffset = QPoint(0, 0);
     lastPoint = QPoint(-1, -1);
     startPoint = QPoint(-1, -1);
+
+    validateBtn = new QToolButton(this);
+    validateBtn->setText("✔ Valider");
+    validateBtn->setAutoRaise(true);
+    validateBtn->setVisible(false); // 👈 caché par défaut
+
+    connect(validateBtn, &QToolButton::clicked,
+            this, &Canvas::applyTransform);
 }
 
 void Canvas::setCompositeImage(const QImage &c)
@@ -167,6 +176,26 @@ void Canvas::paintEvent(QPaintEvent *event)
             painter.drawRect(wRect.normalized());
         }
     }
+    if (transformActive) {
+        QRectF wRect(
+            imageOffset.x() + transformRect.x() * zoom,
+            imageOffset.y() + transformRect.y() * zoom,
+            transformRect.width() * zoom,
+            transformRect.height() * zoom
+        );
+
+        QImage scaled = transformImage.scaled(
+            transformRect.size().toSize(),
+            Qt::IgnoreAspectRatio,
+            Qt::SmoothTransformation
+        );
+        painter.drawImage(wRect.topLeft(), scaled);
+
+        painter.setPen(QPen(Qt::blue, 1, Qt::DashLine));
+        painter.drawRect(wRect);
+
+        positionValidateButton();
+    }
 }
 
 
@@ -189,6 +218,36 @@ QPoint Canvas::widgetToImage(const QPoint &p, const QSize &imgSize)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
+    if (transformActive && currentTool != TRANSFORM)
+        return;
+
+    if (currentTool == TRANSFORM && transformActive) {
+        dragStart = widgetToImage(event->pos(), composite.size());
+
+        QRectF wRect(
+            imageOffset.x() + transformRect.x() * zoom,
+            imageOffset.y() + transformRect.y() * zoom,
+            transformRect.width() * zoom,
+            transformRect.height() * zoom
+        );
+
+        QRectF resizeZone = QRectF(
+            wRect.bottomRight() - QPointF(20, 20),
+            QSizeF(20, 20)
+        );
+
+        if (resizeZone.contains(event->pos())) {
+            activeHandle = 1; // resize
+        }
+        else if (wRect.contains(event->pos())) {
+            activeHandle = -2; // move
+        }
+        else {
+            activeHandle = -1;
+        }
+        return;
+    }
+
     if (currentTool == EYEDROPPER && event->button() == Qt::LeftButton) {
         QPoint imgPt = widgetToImage(event->pos(), composite.size());
         if (imgPt == QPoint(-1,-1)) return;
@@ -285,6 +344,30 @@ void Canvas::mousePressEvent(QMouseEvent *event)
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (transformActive && currentTool == TRANSFORM) {
+
+        QPointF imgPos = widgetToImage(event->pos(), composite.size());
+        QPointF delta = imgPos - dragStart;
+        dragStart = imgPos;
+
+
+        // MOVE
+        if (activeHandle == -2) {
+            transformRect.translate(delta);
+            cropRect.translate(delta);
+        }
+        // RESIZE (coin bas-droit)
+        else if (activeHandle == 1) {
+            transformRect.setBottomRight(
+                transformRect.bottomRight() + delta
+            );
+            cropRect = transformRect;
+        }
+
+        dragStart = event->pos();
+        update();
+        return;
+    }
     if (!targetImg) return;
 
     // --- Shapes preview ---
@@ -406,6 +489,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         emit strokeFinished();
         update();
     }
+    activeHandle = -1;
 }
 
 
@@ -523,6 +607,10 @@ MainWindow::MainWindow(QWidget *parent)
     setupMenu();
     setupToolbarAndPalette();
     statusLabel->setText("Ready - active layer: " + layers[activeLayerIndex].name);
+    QAction *validateTransformAct = new QAction("Validate", this);
+    connect(validateTransformAct, &QAction::triggered,
+            canvas, &Canvas::applyTransform);
+
 }
 
 MainWindow::~MainWindow() = default;
@@ -795,25 +883,23 @@ void MainWindow::setupToolbarAndPalette()
 
 void MainWindow::openFile()
 {
-    QString fileName = QFileDialog::getOpenFileName(this, "Open Image", QString(),
-                                                    "Images (*.png *.jpg *.bmp);;All Files (*)");
+    QString fileName = QFileDialog::getOpenFileName(
+        this, "Open Image", "", "Images (*.png *.jpg *.bmp)");
+
     if (fileName.isEmpty()) return;
 
     QImage loaded;
     if (!loaded.load(fileName)) {
-        QMessageBox::warning(this, "Open failed", "Could not open image.");
+        QMessageBox::warning(this, "Error", "Cannot open image");
         return;
     }
 
-    // place loaded image onto active layer (preserve transparency if possible)
-    layers[activeLayerIndex].image = loaded.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    // clear undo/redo
-    layers[activeLayerIndex].undoStack.clear();
-    layers[activeLayerIndex].redoStack.clear();
+    // 🚀 MODE TRANSFORM
+    canvas->startTransform(
+        loaded.convertToFormat(QImage::Format_ARGB32_Premultiplied)
+    );
 
-    compositeLayers();
-    canvas->setTargetImage(&layers[activeLayerIndex].image);
-    statusLabel->setText(QFileInfo(fileName).fileName() + " loaded into " + layers[activeLayerIndex].name);
+    statusLabel->setText("Transform mode – resize / crop / move then Validate");
 }
 
 void MainWindow::saveFile()
@@ -1598,4 +1684,98 @@ void Canvas::clear()
 {
     targetImg = nullptr;
     update();
+}
+
+void Canvas::startTransform(const QImage &img)
+{
+    transformImage = img;
+    transformRect = QRectF(0, 0, img.width(), img.height());
+    cropRect = transformRect;
+    transformActive = true;
+
+    previousTool = currentTool;
+    currentTool = TRANSFORM;
+
+    validateBtn->setVisible(true);   // 👈 SHOW
+    positionValidateButton();
+
+    update();
+}
+
+void Canvas::positionValidateButton()
+{
+    if (!transformActive) return;
+
+    int x = imageOffset.x()
+          + (transformRect.right() * zoom)
+          + 10;
+
+    int y = imageOffset.y()
+          + (transformRect.top() * zoom);
+
+    validateBtn->move(x, y);
+}
+
+void Canvas::applyTransform()
+{
+    if (!targetImg || !transformActive)
+        return;
+
+    emit strokeStarted();
+
+    // 1️⃣ Resize de l'image source
+    QImage resized = transformImage.scaled(
+        transformRect.size().toSize(),
+        Qt::IgnoreAspectRatio,
+        Qt::SmoothTransformation
+    );
+
+    // 2️⃣ Position finale
+    QPoint topLeft = transformRect.topLeft().toPoint();
+
+    // 3️⃣ Dessin dans le layer actif
+    QPainter p(targetImg);
+    p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    p.drawImage(topLeft, resized);
+
+    // 4️⃣ Reset état transform
+    transformActive = false;
+    activeHandle = -1;
+    validateBtn->hide();
+
+    emit strokeFinished();
+    update();
+}
+
+void Canvas::wheelEvent(QWheelEvent* e)
+{
+    if (!transformActive)
+        return;
+
+    // Sens molette
+    qreal steps = e->angleDelta().y() / 120.0;
+    if (steps == 0)
+        return;
+
+    // Facteur de scale
+    qreal scale = 1.0 + steps * 0.1; // 10% par cran
+    scale = std::clamp(scale, 0.1, 10.0);
+
+    QRectF r = transformRect;
+    QPointF center = r.center();
+
+    QSizeF newSize = r.size() * scale;
+
+    // Taille minimale
+    if (newSize.width() < 5 || newSize.height() < 5)
+        return;
+
+    // Recentrage
+    r.setSize(newSize);
+    r.moveCenter(center);
+
+    transformRect = r;
+
+    update();
+    e->accept();
 }

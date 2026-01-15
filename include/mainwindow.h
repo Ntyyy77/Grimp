@@ -6,6 +6,7 @@
 #include <QShortcut>
 #include <QImage>
 #include <QColor>
+#include <QToolButton> 
 #include <QPoint>
 #include <QLabel>
 #include <QPainter>  
@@ -37,6 +38,9 @@ struct Layer {
 class Canvas : public QWidget {
     Q_OBJECT
 public:
+    void startTransform(const QImage &img);
+    void applyTransform();
+
     explicit Canvas(QWidget *parent = nullptr);
 
     // set the composited image to display (read-only)
@@ -69,8 +73,9 @@ public:
     enum Tool {
         BRUSH, ERASER, LINE, RECTANGLE, CIRCLE,
         RECT_SELECT, LASSO_SELECT, TEXT,
-        BUCKET, EYEDROPPER
+        BUCKET, EYEDROPPER, TRANSFORM
     };
+    Tool previousTool = BRUSH;
 
     void setTool(Tool t);
     bool hasSelection() const { return _hasSelection; }
@@ -100,6 +105,7 @@ public:
         return QImage();
     }
 
+    void wheelEvent(QWheelEvent* e);
     void commitTextItems();
 
 signals:
@@ -116,6 +122,8 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent *event) override; 
 
 private:
+    void positionValidateButton();
+    QToolButton *validateBtn = nullptr;
     QRect selectionRect;
     QPolygon lassoPolygon;   // pour lasso
     bool selecting = false;
@@ -130,6 +138,15 @@ private:
 
     QVector<TextItem> textItems;
     int activeTextIndex = -1;
+
+    bool transformActive = false;
+
+    QImage transformImage;      // image originale
+    QRectF transformRect;       // position + taille affichée
+    QRectF cropRect;            // zone de crop
+
+    int activeHandle = -1;      // coin / côté sélectionné
+    QPointF dragStart;
 
 
     double zoom;
