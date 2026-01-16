@@ -606,6 +606,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupMenu();
     setupToolbarAndPalette();
+    setupColorAdjustmentsPanel(); 
     statusLabel->setText("Ready - active layer: " + layers[activeLayerIndex].name);
     QAction *validateTransformAct = new QAction("Validate", this);
     connect(validateTransformAct, &QAction::triggered,
@@ -1778,4 +1779,105 @@ void Canvas::wheelEvent(QWheelEvent* e)
 
     update();
     e->accept();
+}
+
+void MainWindow::setupColorAdjustmentsPanel()
+{
+    QDockWidget *dock = new QDockWidget("Color Adjustments", this);
+    QWidget *panel = new QWidget(dock);
+    QVBoxLayout *lay = new QVBoxLayout(panel);
+
+    auto makeSlider = [&](const QString &label, int min, int max, int val) {
+        QLabel *l = new QLabel(label);
+        QSlider *s = new QSlider(Qt::Horizontal);
+        s->setRange(min, max);
+        s->setValue(val);
+        lay->addWidget(l);
+        lay->addWidget(s);
+        return s;
+    };
+
+    hueSlider        = makeSlider("Hue", -180, 180, 0);
+    saturationSlider = makeSlider("Saturation", -100, 100, 0);
+    lightnessSlider  = makeSlider("Lightness", -100, 100, 0);
+    brightnessSlider = makeSlider("Brightness", -100, 100, 0);
+    contrastSlider   = makeSlider("Contrast", -100, 100, 0);
+
+    QPushButton *applyBtn = new QPushButton("Apply");
+    QPushButton *resetBtn = new QPushButton("Reset");
+
+    lay->addWidget(applyBtn);
+    lay->addWidget(resetBtn);
+
+    panel->setLayout(lay);
+    dock->setWidget(panel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+
+    connect(applyBtn, &QPushButton::clicked,
+            this, &MainWindow::applyColorAdjustments);
+    connect(resetBtn, &QPushButton::clicked,
+            this, &MainWindow::resetColorAdjustments);
+}
+
+void MainWindow::applyColorAdjustments()
+{
+    if (activeLayerIndex < 0 || activeLayerIndex >= layers.size())
+        return;
+
+    pushUndoForActiveLayer();
+    clearRedoForActiveLayer();
+
+    QImage &img = layers[activeLayerIndex].image;
+
+    int hue        = hueSlider->value();
+    int sat        = saturationSlider->value();
+    int light      = lightnessSlider->value();
+    int brightness = brightnessSlider->value();
+    int contrast   = contrastSlider->value();
+
+    double cFactor = (259.0 * (contrast + 255)) / (255 * (259 - contrast));
+
+    for (int y = 0; y < img.height(); ++y) {
+        QRgb *line = reinterpret_cast<QRgb*>(img.scanLine(y));
+        for (int x = 0; x < img.width(); ++x) {
+            QColor col = QColor::fromRgba(line[x]);
+
+            // --- HSL ---
+            int h, s, l, a;
+            col.getHsl(&h, &s, &l, &a);
+
+            if (h >= 0) h = (h + hue + 360) % 360;
+            s = std::clamp(s + sat * 255 / 100, 0, 255);
+            l = std::clamp(l + light * 255 / 100, 0, 255);
+
+            col.setHsl(h, s, l, a);
+
+            // --- Brightness / Contrast ---
+            int r = col.red();
+            int g = col.green();
+            int b = col.blue();
+
+            r = std::clamp(int(cFactor * (r - 128) + 128 + brightness), 0, 255);
+            g = std::clamp(int(cFactor * (g - 128) + 128 + brightness), 0, 255);
+            b = std::clamp(int(cFactor * (b - 128) + 128 + brightness), 0, 255);
+
+            col.setRgb(r, g, b, a);
+            line[x] = col.rgba();
+        }
+    }
+
+    compositeLayers();
+    statusLabel->setText("Color adjustments applied");
+}
+
+
+void MainWindow::resetColorAdjustments()
+{
+    hueSlider->setValue(0);
+    saturationSlider->setValue(0);
+    lightnessSlider->setValue(0);
+    brightnessSlider->setValue(0);
+    contrastSlider->setValue(0);
+
+    statusLabel->setText("Color adjustments reset");
 }

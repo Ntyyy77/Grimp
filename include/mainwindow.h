@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QWidget>
+#include <QDockWidget>
 #include <QShortcut>
 #include <QImage>
 #include <QColor>
@@ -167,6 +168,10 @@ public:
     ~MainWindow() override;
 
 private slots:
+    // Color adjustments
+    void applyColorAdjustments();
+    void resetColorAdjustments();
+
     // file actions
     void openFile();
     void saveFile();
@@ -219,6 +224,15 @@ private slots:
 
 
 private:
+    void setupColorAdjustmentsPanel();
+
+    QSlider *hueSlider;
+    QSlider *saturationSlider;
+    QSlider *lightnessSlider;
+    QSlider *brightnessSlider;
+    QSlider *contrastSlider;
+    QImage colorPreviewBackup;
+
     // UI helpers
     void setupMenu();
     void setupToolbarAndPalette();
